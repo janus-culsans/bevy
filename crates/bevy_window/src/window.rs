@@ -1,6 +1,7 @@
 use bevy_math::{DVec2, IVec2, Vec2};
 use bevy_utils::{tracing::warn, Uuid};
 use raw_window_handle::RawWindowHandle;
+use thiserror::Error;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct WindowId(Uuid);
@@ -53,7 +54,7 @@ impl WindowId {
 }
 
 use crate::CursorIcon;
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 use crate::raw_window_handle::RawWindowHandleWrapper;
 
@@ -128,6 +129,99 @@ impl WindowResizeConstraints {
     }
 }
 
+/// Generic icon buffer for a window.
+/// Replicates the struct from winit.
+///
+/// Only allows rgba images.
+#[derive(Debug, Clone)]
+pub struct WindowIconBytes {
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+/// Errors that occur while constructing window icons.
+#[derive(Error, Debug)]
+pub enum WindowIconBytesError {
+    #[error("32bpp RGBA image buffer expected, but {bytes_length} is not divisible by 4")]
+    NotRGBA { bytes_length: usize },
+    #[error("Buffer size {bytes_length} does not match the expected size based on the dimensions {pixel_bytes_length}")]
+    SizeMismatch {
+        pixel_bytes_length: usize,
+        bytes_length: usize,
+    },
+}
+
+/// The icon on a window.
+/// The path buffer in the `Path` variant will be passed to the asset server and will be automatically passed to the window backend.
+///
+/// Make sure that the source image is reasonably sized. Refer to winit's `set_window_icon` function.
+#[derive(Debug, Clone)]
+pub enum WindowIcon {
+    Path(PathBuf),
+    Bytes(WindowIconBytes),
+}
+
+impl<T> From<T> for WindowIcon
+where
+    T: Into<PathBuf>,
+{
+    fn from(path: T) -> Self {
+        WindowIcon::Path(path.into())
+    }
+}
+
+impl From<WindowIconBytes> for WindowIcon {
+    fn from(window_icon_bytes: WindowIconBytes) -> Self {
+        WindowIcon::Bytes(window_icon_bytes)
+    }
+}
+
+impl WindowIconBytes {
+    /// Create a window icon from a rgba image.
+    ///
+    /// Returns a `WindowIconBytesError` if `bytes` do not add up to a rgba image or the size does not match the specified width and height.
+    pub fn from_rgba(
+        bytes: Vec<u8>,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, WindowIconBytesError> {
+        let pixel_count = (width * height) as usize;
+        let pixel_bytes_length = pixel_count * 4;
+        let bytes_length = bytes.len();
+
+        if bytes_length % 4 != 0 {
+            Err(WindowIconBytesError::NotRGBA { bytes_length })
+        } else if pixel_bytes_length != bytes_length {
+            Err(WindowIconBytesError::SizeMismatch {
+                pixel_bytes_length,
+                bytes_length,
+            })
+        } else {
+            Ok(Self {
+                bytes,
+                width,
+                height,
+            })
+        }
+    }
+
+    /// Bytes of the rgba icon.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Width of the icon.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height of the icon.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+}
+
 /// An operating system window that can present content and receive user input.
 ///
 /// ## Window Sizes
@@ -165,6 +259,7 @@ pub struct Window {
     raw_window_handle: RawWindowHandleWrapper,
     focused: bool,
     mode: WindowMode,
+    icon: Option<WindowIcon>,
     #[cfg(target_arch = "wasm32")]
     pub canvas: Option<String>,
     command_queue: Vec<WindowCommand>,
@@ -219,6 +314,10 @@ pub enum WindowCommand {
     SetResizeConstraints {
         resize_constraints: WindowResizeConstraints,
     },
+    SetIcon {
+        window_icon_bytes: WindowIconBytes,
+    },
+    ClearIcon,
 }
 
 /// Defines the way a window is displayed
@@ -268,6 +367,7 @@ impl Window {
             mode: window_descriptor.mode,
             #[cfg(target_arch = "wasm32")]
             canvas: window_descriptor.canvas.clone(),
+            icon: None,
             command_queue: Vec::new(),
         }
     }
@@ -584,6 +684,26 @@ impl Window {
     pub fn raw_window_handle(&self) -> RawWindowHandleWrapper {
         self.raw_window_handle.clone()
     }
+    
+    #[inline]
+    pub fn icon(&self) -> Option<&WindowIcon> {
+        self.icon.as_ref()
+    }
+
+    pub fn set_icon(&mut self, icon: impl Into<WindowIcon> + Clone) {
+        self.icon = Some(icon.clone().into());
+
+        if let WindowIcon::Bytes(window_icon_bytes) = icon.into() {
+            self.command_queue
+                .push(WindowCommand::SetIcon { window_icon_bytes });
+        }
+    }
+
+    pub fn clear_icon(&mut self) {
+        self.icon = None;
+
+        self.command_queue.push(WindowCommand::ClearIcon);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -611,6 +731,7 @@ pub struct WindowDescriptor {
     pub transparent: bool,
     #[cfg(target_arch = "wasm32")]
     pub canvas: Option<String>,
+    pub icon_path: Option<PathBuf>,
 }
 
 impl Default for WindowDescriptor {
@@ -631,6 +752,7 @@ impl Default for WindowDescriptor {
             transparent: false,
             #[cfg(target_arch = "wasm32")]
             canvas: None,
+            icon_path: None,
         }
     }
 }

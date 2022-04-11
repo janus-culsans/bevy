@@ -161,7 +161,8 @@ impl WinitWindows {
         let scale_factor = winit_window.scale_factor();
         let raw_window_handle = winit_window.raw_window_handle();
         self.windows.insert(winit_window.id(), winit_window);
-        Window::new(
+
+        let mut window = Window::new(
             window_id,
             window_descriptor,
             inner_size.width,
@@ -169,7 +170,13 @@ impl WinitWindows {
             scale_factor,
             position,
             raw_window_handle,
-        )
+        );
+
+        if let Some(icon_path) = &window_descriptor.icon_path {
+            window.set_icon(icon_path); /* This will queue up loading the asset and subsequently set the window icon */
+        }
+
+        window
     }
 
     pub fn get_window(&self, id: WindowId) -> Option<&winit::window::Window> {

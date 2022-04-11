@@ -14,6 +14,17 @@ pub mod settings;
 pub mod texture;
 pub mod view;
 
+use bevy_ecs::{
+    prelude::{Local, ResMut},
+    schedule::{SystemStage, StageLabel},
+    system::{IntoExclusiveSystem, Res},
+};
+use bevy_utils::{
+    tracing::{error, debug},
+    HashMap, Entry,
+};
+use bevy_window::{WindowIcon, WindowIconBytes, WindowId, Windows};
+
 pub mod prelude {
     #[doc(hidden)]
     pub use crate::{
@@ -29,8 +40,8 @@ pub mod prelude {
     };
 }
 
-use bevy_utils::tracing::debug;
 pub use once_cell;
+use prelude::Image;
 
 use crate::{
     camera::CameraPlugin,
@@ -43,8 +54,9 @@ use crate::{
     texture::ImagePlugin,
     view::{ViewPlugin, WindowRenderPlugin},
 };
-use bevy_app::{App, AppLabel, Plugin};
-use bevy_asset::{AddAsset, AssetServer};
+use bevy_asset::{AddAsset, AssetServer, Assets, Handle, LoadState};
+
+use bevy_app::{App, AppLabel, Plugin, CoreStage};
 use bevy_ecs::prelude::*;
 use std::ops::{Deref, DerefMut};
 
@@ -285,7 +297,8 @@ impl Plugin for RenderPlugin {
             .add_plugin(MeshPlugin)
             // NOTE: Load this after renderer initialization so that it knows about the supported
             // compressed texture formats
-            .add_plugin(ImagePlugin);
+            .add_plugin(ImagePlugin)
+            .add_system_to_stage(CoreStage::PostUpdate, window_icon_changed);
     }
 }
 
@@ -310,4 +323,62 @@ fn extract(app_world: &mut World, render_app: &mut App) {
     app_world.insert_resource(ScratchRenderWorld(scratch_world));
 
     extract.apply_buffers(&mut render_app.world);
+}
+
+fn window_icon_changed(
+    mut map: Local<HashMap<WindowId, Handle<Image>>>,
+    textures: Res<Assets<Image>>,
+    mut windows: ResMut<Windows>,
+    asset_server: Res<AssetServer>,
+) {
+    for window in windows.iter_mut() {
+        /* Insert new icon changed */
+        if let Some(WindowIcon::Path(path)) = window.icon() {
+            match map.entry(window.id()) {
+                Entry::Occupied(mut o) => {
+                    if let Some(handle_path) = asset_server.get_handle_path(o.get()) {
+                        if handle_path.path() != path {
+                            o.insert(asset_server.load(path.clone()));
+                        } /* else we are still attempting to load the initial asset */
+                    } /* else the path from the asset is not available yet */
+                }
+                Entry::Vacant(v) => {
+                    v.insert(asset_server.load(path.clone()));
+                }
+            }
+        }
+
+        /* Poll load state of handle and set the icon */
+        if let Entry::Occupied(o) = map.entry(window.id()) {
+            let handle = o.get();
+            match asset_server.get_load_state(handle) {
+                LoadState::Loaded => {
+                    let texture = textures.get(handle).unwrap(); /* Safe to unwrap here, because loadstate==loaded is checked */
+
+                    let window_icon_bytes = WindowIconBytes::from_rgba(
+                        texture.data.clone(),
+                        texture.texture_descriptor.size.width,
+                        texture.texture_descriptor.size.height,
+                    );
+
+                    match window_icon_bytes {
+                        Ok(window_icon_bytes) => {
+                            let window_icon = WindowIcon::from(window_icon_bytes);
+                            window.set_icon(window_icon);
+                        }
+                        Err(e) => error!(
+                            "For handle {:?} the following error was produced: {}",
+                            handle, e
+                        ),
+                    }
+
+                    o.remove();
+                }
+                LoadState::Failed => {
+                    o.remove();
+                }
+                _ => { /* Do nothing */ }
+            }
+        }
+    }
 }

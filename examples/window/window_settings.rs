@@ -8,12 +8,14 @@ fn main() {
             width: 500.,
             height: 300.,
             present_mode: PresentMode::Fifo,
+            icon_path: Some("android-res/mipmap-mdpi/ic_launcher.png".into()),
             ..default()
         })
         .add_plugins(DefaultPlugins)
         .add_system(change_title)
         .add_system(toggle_cursor)
         .add_system(cycle_cursor_icon)
+        .add_system(toggle_icon)
         .run();
 }
 
@@ -59,5 +61,19 @@ fn cycle_cursor_icon(
             *index - 1
         };
         window.set_cursor_icon(ICONS[*index]);
+    }
+}
+
+/// This system toggles the windows' icon (on/off) when I is pressed
+fn toggle_icon(input: Res<Input<KeyCode>>, mut windows: ResMut<Windows>) {
+    let window = windows.get_primary_mut().unwrap();
+    if input.just_pressed(KeyCode::I) {
+        match window.icon() {
+            None => {
+                /* Alternatively you can construct a "buffer-based" WindowIcon and bypass the asset server */
+                window.set_icon("android-res/mipmap-mdpi/ic_launcher.png");
+            }
+            _ => window.clear_icon(),
+        }
     }
 }
